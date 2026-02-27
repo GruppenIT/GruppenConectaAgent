@@ -3,6 +3,7 @@ name: Build & Package Agent
 on:
   push:
     branches: ["main", "claude/**"]
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
 
