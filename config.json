@@ -1,0 +1,7 @@
+{
+  "ConsoleUrl": "ws://localhost:3001/ws/agent",
+  "AgentId": "agent-demo-001",
+  "AgentToken": "demo-token-12345",
+  "LogLevel": "Information",
+  "LogPath": "C:\\ProgramData\\Gruppen\\RemoteAgent\\logs"
+}
