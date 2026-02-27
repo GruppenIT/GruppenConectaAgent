@@ -23,7 +23,7 @@ builder.Services.AddLogging(logging =>
 {
     logging.ClearProviders();
     logging.AddConsole();
-    logging.AddFile(logPath + "/agent-{Date}.log", minimumLevel: LogLevel.Debug);
+    logging.AddFile(logPath + "/agent-{Date}.log");
 });
 
 // Register services
