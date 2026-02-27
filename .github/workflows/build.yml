@@ -32,7 +32,7 @@ jobs:
 
       - name: Publish self-contained single-file
         run: >
-          dotnet publish -c Release
+          dotnet publish GruppenRemoteAgent.csproj -c Release
           -r win-x64
           --self-contained true
           -p:PublishSingleFile=true
@@ -61,7 +61,7 @@ jobs:
           path: publish
 
       - name: Install WiX Toolset v5
-        run: dotnet tool install --global wix
+        run: dotnet tool install --global wix --version 5.0.2
 
       - name: Add WiX UI extension
         run: wix extension add WixToolset.UI.wixext
