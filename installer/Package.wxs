@@ -7,6 +7,10 @@
     <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente já está instalada." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Install directory UI wizard -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+
     <Feature Id="Main">
       <ComponentGroupRef Id="ProductComponents" />
       <ComponentRef Id="ServiceComponent" />

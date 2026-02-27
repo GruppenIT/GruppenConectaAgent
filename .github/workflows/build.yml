@@ -63,11 +63,15 @@ jobs:
       - name: Install WiX Toolset v5
         run: dotnet tool install --global wix
 
+      - name: Add WiX UI extension
+        run: wix extension add WixToolset.UI.wixext
+
       - name: Build MSI
         run: >
           wix build installer/Package.wxs
           -o GruppenRemoteAgent.msi
           -d PublishDir=publish
+          -ext WixToolset.UI.wixext
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4
