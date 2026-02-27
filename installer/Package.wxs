@@ -5,6 +5,7 @@
            UpgradeCode="E7A3B2C1-D4F5-6789-ABCD-EF0123456789">
 
     <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente já está instalada." />
+    <MediaTemplate EmbedCab="yes" />
 
     <Feature Id="Main">
       <ComponentGroupRef Id="ProductComponents" />
