@@ -14,7 +14,9 @@ using Microsoft.Extensions.Logging;
 // -----------------------------------------------------------------------
 if (args.Length >= 2 && args[0] == "--capture-helper")
 {
-    CaptureHelper.Run(args[1]);
+    string capturePipe = args[1];
+    string? inputPipe = args.Length >= 3 ? args[2] : null;
+    CaptureHelper.Run(capturePipe, inputPipe);
     return;
 }
 

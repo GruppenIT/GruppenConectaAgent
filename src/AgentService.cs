@@ -207,12 +207,18 @@ public class AgentService : BackgroundService
 
                 case MessageTypes.MOUSE_EVENT:
                     var mouseEvt = BinaryProtocol.DeserializePayload<MouseEvent>(payload);
-                    _mouse.Simulate(mouseEvt);
+                    if (_screenCapture is SessionCapture sessionMouse)
+                        sessionMouse.SendMouseEvent(mouseEvt);
+                    else
+                        _mouse.Simulate(mouseEvt);
                     break;
 
                 case MessageTypes.KEY_EVENT:
                     var keyEvt = BinaryProtocol.DeserializePayload<KeyEvent>(payload);
-                    _keyboard.Simulate(keyEvt);
+                    if (_screenCapture is SessionCapture sessionKey)
+                        sessionKey.SendKeyEvent(keyEvt);
+                    else
+                        _keyboard.Simulate(keyEvt);
                     break;
 
                 case MessageTypes.HEARTBEAT_ACK:
