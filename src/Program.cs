@@ -19,6 +19,8 @@ builder.Services.Configure<AgentConfig>(builder.Configuration);
 var logPath = builder.Configuration["LogPath"]
               ?? @"C:\ProgramData\Gruppen\RemoteAgent\logs";
 
+Directory.CreateDirectory(logPath);
+
 builder.Services.AddLogging(logging =>
 {
     logging.ClearProviders();
