@@ -7,15 +7,23 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-var builder = Host.CreateApplicationBuilder(args);
-
-// Resolve config.json relative to the executable, not the working directory.
-// Windows services run with CWD = C:\Windows\System32, so a relative path
-// would never find the file sitting next to the .exe.
+// Force ContentRootPath to the directory that contains the .exe so that
+// config.json (installed by the MSI next to the executable) is always found,
+// regardless of the working directory set by the Windows Service Control Manager.
 var exeDir = Path.GetDirectoryName(Environment.ProcessPath)!;
-var configPath = Path.Combine(exeDir, "config.json");
 
-builder.Configuration.AddJsonFile(configPath, optional: true, reloadOnChange: true);
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = args,
+    ContentRootPath = exeDir,
+});
+
+builder.Services.AddWindowsService(options =>
+{
+    options.ServiceName = "GruppenRemoteAgent";
+});
+
+builder.Configuration.AddJsonFile("config.json", optional: true, reloadOnChange: true);
 
 // Bind configuration section
 builder.Services.Configure<AgentConfig>(builder.Configuration);
@@ -41,12 +49,6 @@ builder.Services.AddSingleton<SystemInfo>();
 
 // Register the main background service
 builder.Services.AddHostedService<AgentService>();
-
-// Enable running as Windows Service
-builder.Services.AddWindowsService(options =>
-{
-    options.ServiceName = "GruppenRemoteAgent";
-});
 
 var host = builder.Build();
 await host.RunAsync();
