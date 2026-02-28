@@ -1,0 +1,53 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Gruppen Remote Agent"
+           Manufacturer="Gruppen IT"
+           Version="1.0.0"
+           UpgradeCode="E7A3B2C1-D4F5-6789-ABCD-EF0123456789">
+
+    <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente já está instalada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Install directory UI wizard -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="ServiceComponent" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Gruppen Remote Agent">
+        <Component Id="ServiceComponent">
+          <File Source="$(var.PublishDir)\GruppenRemoteAgent.exe" />
+          <ServiceInstall
+            Id="ServiceInstaller"
+            Name="GruppenRemoteAgent"
+            DisplayName="Gruppen Remote Agent"
+            Description="Agente de suporte remoto Gruppen"
+            Start="auto"
+            Type="ownProcess"
+            ErrorControl="normal"
+            Account="LocalSystem" />
+          <ServiceControl
+            Id="ServiceControl"
+            Name="GruppenRemoteAgent"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      <Component>
+        <File Source="$(var.PublishDir)\config.json" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

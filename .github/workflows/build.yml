@@ -1,0 +1,113 @@
+name: Build & Package Agent
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  PUBLISH_DIR: publish
+
+jobs:
+  build:
+    name: Compile Agent (win-x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build -c Release --no-restore
+
+      - name: Publish self-contained single-file
+        run: >
+          dotnet publish GruppenRemoteAgent.csproj -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -o ${{ env.PUBLISH_DIR }}
+
+      - name: Upload publish artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-publish
+          path: ${{ env.PUBLISH_DIR }}/
+          retention-days: 30
+
+  installer:
+    name: Build MSI Installer
+    runs-on: windows-latest
+    needs: build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download publish artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-publish
+          path: publish
+
+      - name: Install WiX Toolset v5
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Add WiX UI extension
+        run: wix extension add WixToolset.UI.wixext/5.0.1
+
+      - name: Build MSI
+        run: >
+          wix build installer/Package.wxs
+          -o GruppenRemoteAgent.msi
+          -d PublishDir=publish
+          -ext WixToolset.UI.wixext
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GruppenRemoteAgent-MSI
+          path: GruppenRemoteAgent.msi
+          retention-days: 30
+
+  release:
+    name: Create Release (tags only)
+    runs-on: windows-latest
+    needs: installer
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download MSI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GruppenRemoteAgent-MSI
+          path: .
+
+      - name: Download publish artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-publish
+          path: publish
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Gruppen Remote Agent ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            GruppenRemoteAgent.msi
+            publish/GruppenRemoteAgent.exe
