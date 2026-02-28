@@ -4,8 +4,9 @@ using Microsoft.Extensions.Logging;
 namespace GruppenRemoteAgent.Capture;
 
 /// <summary>
-/// Launches a process in the interactive (console) user session from Session 0.
-/// Requires the calling process to run as LocalSystem (which Windows services do).
+/// Launches a process in the interactive user session from Session 0.
+/// Handles both physical console and RDP sessions by enumerating all
+/// active sessions when the console session has no user token.
 /// </summary>
 internal static class SessionProcess
 {
@@ -20,6 +21,14 @@ internal static class SessionProcess
 
     [DllImport("wtsapi32.dll", SetLastError = true)]
     private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSEnumerateSessionsW(
+        IntPtr hServer, int reserved, int version,
+        out IntPtr ppSessionInfo, out int pCount);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool DuplicateTokenEx(
@@ -42,6 +51,14 @@ internal static class SessionProcess
 
     [DllImport("kernel32.dll")]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WTS_SESSION_INFO
+    {
+        public uint SessionId;
+        public IntPtr pWinStationName;
+        public int State;
+    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO
@@ -74,10 +91,8 @@ internal static class SessionProcess
     private const int TokenPrimary = 1;
     private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const int WTSActive = 0;
 
-    /// <summary>
-    /// Returns true if the current process is running in Session 0 (service session).
-    /// </summary>
     public static bool IsSession0()
     {
         ProcessIdToSessionId(GetCurrentProcessId(), out uint sessionId);
@@ -85,22 +100,61 @@ internal static class SessionProcess
     }
 
     /// <summary>
-    /// Launches a command in the active console user session.
+    /// Finds a user session that has a valid token. Tries the console session
+    /// first, then falls back to enumerating all active sessions (covers RDP).
     /// </summary>
+    private static (uint sessionId, IntPtr token) GetUserSessionToken(ILogger logger)
+    {
+        // 1) Try the physical console session first
+        uint consoleId = WTSGetActiveConsoleSessionId();
+        if (consoleId != 0xFFFFFFFF && consoleId != 0)
+        {
+            if (WTSQueryUserToken(consoleId, out IntPtr token))
+            {
+                logger.LogInformation("Using console session {Session}.", consoleId);
+                return (consoleId, token);
+            }
+            logger.LogDebug("Console session {Session} has no user token (error {Err}), trying other sessions...",
+                consoleId, Marshal.GetLastWin32Error());
+        }
+
+        // 2) Enumerate all sessions and find an active one with a token
+        if (!WTSEnumerateSessionsW(IntPtr.Zero, 0, 1, out IntPtr pSessions, out int count))
+            throw new InvalidOperationException(
+                $"WTSEnumerateSessions failed (Win32 error {Marshal.GetLastWin32Error()}).");
+
+        try
+        {
+            int structSize = Marshal.SizeOf<WTS_SESSION_INFO>();
+            for (int i = 0; i < count; i++)
+            {
+                var si = Marshal.PtrToStructure<WTS_SESSION_INFO>(pSessions + i * structSize);
+
+                // Skip Session 0 and non-active sessions
+                if (si.SessionId == 0 || si.State != WTSActive)
+                    continue;
+
+                if (WTSQueryUserToken(si.SessionId, out IntPtr token))
+                {
+                    logger.LogInformation("Using active session {Session}.", si.SessionId);
+                    return (si.SessionId, token);
+                }
+
+                logger.LogDebug("Session {Session} active but no token (error {Err}).",
+                    si.SessionId, Marshal.GetLastWin32Error());
+            }
+        }
+        finally
+        {
+            WTSFreeMemory(pSessions);
+        }
+
+        throw new InvalidOperationException("No active user session with a valid token found. Is a user logged in?");
+    }
+
     public static int LaunchInUserSession(string commandLine, ILogger logger)
     {
-        uint sessionId = WTSGetActiveConsoleSessionId();
-        if (sessionId == 0xFFFFFFFF)
-            throw new InvalidOperationException("No active console session found.");
-
-        logger.LogInformation("Launching capture helper in session {Session}...", sessionId);
-
-        if (!WTSQueryUserToken(sessionId, out IntPtr userToken))
-        {
-            int err = Marshal.GetLastWin32Error();
-            throw new InvalidOperationException(
-                $"WTSQueryUserToken failed for session {sessionId} (Win32 error {err}). Is a user logged in?");
-        }
+        var (sessionId, userToken) = GetUserSessionToken(logger);
 
         try
         {
