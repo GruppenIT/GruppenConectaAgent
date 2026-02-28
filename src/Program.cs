@@ -7,11 +7,26 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-// Force ContentRootPath to the directory that contains the .exe so that
-// config.json (installed by the MSI next to the executable) is always found,
-// regardless of the working directory set by the Windows Service Control Manager.
-var exeDir = Path.GetDirectoryName(Environment.ProcessPath)!;
 var dataDir = @"C:\ProgramData\Gruppen\RemoteAgent";
+var logPath = Path.Combine(dataDir, "logs");
+Directory.CreateDirectory(logPath);
+
+// Write a diagnostic file BEFORE anything else so we can always see what
+// the process sees, even if configuration or DI fails completely.
+var diagFile = Path.Combine(logPath, "startup-diag.txt");
+var exeDir = AppContext.BaseDirectory;
+var exeConfigPath = Path.Combine(exeDir, "config.json");
+var dataConfigPath = Path.Combine(dataDir, "config.json");
+
+File.WriteAllText(diagFile, string.Join(Environment.NewLine,
+    $"Timestamp       : {DateTime.Now:O}",
+    $"ProcessPath     : {Environment.ProcessPath}",
+    $"BaseDirectory   : {AppContext.BaseDirectory}",
+    $"CWD             : {Environment.CurrentDirectory}",
+    $"ExeDir          : {exeDir}",
+    $"ExeConfig exists: {File.Exists(exeConfigPath)} -> {exeConfigPath}",
+    $"DataConfig exists: {File.Exists(dataConfigPath)} -> {dataConfigPath}",
+    ""));
 
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 {
@@ -24,30 +39,25 @@ builder.Services.AddWindowsService(options =>
     options.ServiceName = "GruppenRemoteAgent";
 });
 
-// 1) Load defaults from the install directory (bundled by the MSI).
-// 2) Overlay with user config from ProgramData (survives reinstalls).
-builder.Configuration.AddJsonFile("config.json", optional: true, reloadOnChange: true);
-builder.Configuration.AddJsonFile(
-    Path.Combine(dataDir, "config.json"), optional: true, reloadOnChange: true);
+// Load config from both locations; ProgramData values take precedence
+// over the install-directory defaults and survive MSI reinstalls.
+builder.Configuration.AddJsonFile(exeConfigPath, optional: true, reloadOnChange: true);
+builder.Configuration.AddJsonFile(dataConfigPath, optional: true, reloadOnChange: true);
+
+// Append resolved values to the diagnostic file
+File.AppendAllText(diagFile, string.Join(Environment.NewLine,
+    $"Resolved ConsoleUrl : {builder.Configuration["ConsoleUrl"]}",
+    $"Resolved AgentId    : {builder.Configuration["AgentId"]}",
+    $"Resolved LogPath    : {builder.Configuration["LogPath"]}",
+    ""));
 
 // Bind configuration section
 builder.Services.Configure<AgentConfig>(builder.Configuration);
 
-// Configure logging
-var logPath = builder.Configuration["LogPath"]
-              ?? @"C:\ProgramData\Gruppen\RemoteAgent\logs";
-
-Directory.CreateDirectory(logPath);
-
 // Seed a user-editable config.json in ProgramData on first run so the user
 // has a single well-known location to edit that won't be overwritten by MSI.
-var userConfig = Path.Combine(dataDir, "config.json");
-if (!File.Exists(userConfig))
-{
-    var defaultConfig = Path.Combine(exeDir, "config.json");
-    if (File.Exists(defaultConfig))
-        File.Copy(defaultConfig, userConfig);
-}
+if (!File.Exists(dataConfigPath) && File.Exists(exeConfigPath))
+    File.Copy(exeConfigPath, dataConfigPath);
 
 builder.Services.AddLogging(logging =>
 {
