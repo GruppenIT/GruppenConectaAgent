@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Extensions.Logging;
 
 namespace GruppenRemoteAgent.Capture;
@@ -54,8 +56,25 @@ public class SessionCapture : IScreenCapture
         _pipe?.Dispose();
 
         _pipeName = $"gruppen-capture-{Guid.NewGuid():N}";
-        _pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1,
-            PipeTransmissionMode.Byte, PipeOptions.None, 0, 1024 * 1024);
+
+        // The service runs as LocalSystem (Session 0) but the helper runs as
+        // the logged-in user (Session 1+). Grant authenticated users read/write
+        // access so the helper can connect to the pipe.
+        var security = new PipeSecurity();
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+            PipeAccessRights.ReadWrite,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+
+        _pipe = NamedPipeServerStreamAcl.Create(
+            _pipeName, PipeDirection.InOut, 1,
+            PipeTransmissionMode.Byte, PipeOptions.None,
+            inBufferSize: 0, outBufferSize: 1024 * 1024,
+            pipeSecurity: security);
 
         string exePath = Environment.ProcessPath!;
         string cmdLine = $"\"{exePath}\" --capture-helper {_pipeName}";
