@@ -9,8 +9,13 @@ using Microsoft.Extensions.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Load configuration from config.json
-builder.Configuration.AddJsonFile("config.json", optional: true, reloadOnChange: true);
+// Resolve config.json relative to the executable, not the working directory.
+// Windows services run with CWD = C:\Windows\System32, so a relative path
+// would never find the file sitting next to the .exe.
+var exeDir = Path.GetDirectoryName(Environment.ProcessPath)!;
+var configPath = Path.Combine(exeDir, "config.json");
+
+builder.Configuration.AddJsonFile(configPath, optional: true, reloadOnChange: true);
 
 // Bind configuration section
 builder.Services.Configure<AgentConfig>(builder.Configuration);
