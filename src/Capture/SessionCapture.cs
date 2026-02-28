@@ -1,7 +1,6 @@
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
-using System.Text;
 using System.Text.Json;
 using GruppenRemoteAgent.Protocol;
 using Microsoft.Extensions.Logging;
@@ -14,15 +13,17 @@ namespace GruppenRemoteAgent.Capture;
 ///
 /// Capture pipe (bidirectional, request/response per frame):
 ///   Service  → Helper : [1 byte quality (1-100)]
-///   Helper   → Service: [4 bytes BE length][N bytes JPEG data]
+///   Helper   → Service: [4 bytes BE length][N bytes JPEG data]  (length 0 = no change)
 ///
 /// Input pipe (one-way, service → helper):
-///   [1 byte type (1=mouse, 2=key)][4 bytes BE length][N bytes JSON]
+///   [1 byte type][4 bytes BE length][N bytes JSON]
+///   type 1 = mouse, type 2 = key, type 3 = notify
 /// </summary>
 public class SessionCapture : IScreenCapture
 {
     private const byte INPUT_TYPE_MOUSE = 1;
     private const byte INPUT_TYPE_KEY = 2;
+    private const byte INPUT_TYPE_NOTIFY = 3;
 
     private readonly ILogger _logger;
     private NamedPipeServerStream? _capturePipe;
@@ -30,6 +31,7 @@ public class SessionCapture : IScreenCapture
     private string? _capturePipeName;
     private string? _inputPipeName;
     private readonly object _inputLock = new();
+    private int? _targetSessionId;
 
     public SessionCapture(ILogger<SessionCapture> logger)
     {
@@ -46,12 +48,15 @@ public class SessionCapture : IScreenCapture
         _capturePipe!.WriteByte((byte)Math.Clamp(jpegQuality, 1, 100));
         _capturePipe.Flush();
 
-        // Response: 4 bytes BE length + JPEG data
+        // Response: 4 bytes BE length + JPEG data (length 0 = no change)
         byte[] lenBuf = new byte[4];
         _capturePipe.ReadExactly(lenBuf, 0, 4);
         int len = (lenBuf[0] << 24) | (lenBuf[1] << 16) | (lenBuf[2] << 8) | lenBuf[3];
 
-        if (len <= 0 || len > 10 * 1024 * 1024) // sanity: max 10 MB
+        if (len == 0)
+            return Array.Empty<byte>(); // No screen change
+
+        if (len < 0 || len > 10 * 1024 * 1024)
             throw new InvalidOperationException($"Invalid frame length from helper: {len}");
 
         byte[] jpeg = new byte[len];
@@ -73,6 +78,30 @@ public class SessionCapture : IScreenCapture
     public void SendKeyEvent(KeyEvent evt)
     {
         SendInputCommand(INPUT_TYPE_KEY, evt);
+    }
+
+    /// <summary>
+    /// Sends a notification command to the helper for display in the user session.
+    /// </summary>
+    public void SendNotification(NotifyRemotePayload payload)
+    {
+        SendInputCommand(INPUT_TYPE_NOTIFY, payload);
+    }
+
+    /// <summary>
+    /// Switch the capture helper to a specific session.
+    /// Tears down the current helper and restarts in the target session.
+    /// </summary>
+    public void SwitchToSession(int sessionId)
+    {
+        _logger.LogInformation("Switching capture to session {SessionId}.", sessionId);
+        _targetSessionId = sessionId;
+
+        // Force helper restart on next CaptureScreen call
+        _capturePipe?.Dispose();
+        _capturePipe = null;
+        _inputPipe?.Dispose();
+        _inputPipe = null;
     }
 
     private void SendInputCommand<T>(byte type, T payload)
@@ -136,7 +165,10 @@ public class SessionCapture : IScreenCapture
         string exePath = Environment.ProcessPath!;
         string cmdLine = $"\"{exePath}\" --capture-helper {_capturePipeName} {_inputPipeName}";
 
-        SessionProcess.LaunchInUserSession(cmdLine, _logger);
+        if (_targetSessionId.HasValue)
+            SessionProcess.LaunchInSession((uint)_targetSessionId.Value, cmdLine, _logger);
+        else
+            SessionProcess.LaunchInUserSession(cmdLine, _logger);
 
         // Wait for the helper to connect both pipes (10 s timeout)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));

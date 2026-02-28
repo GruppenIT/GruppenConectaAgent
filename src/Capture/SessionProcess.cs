@@ -155,7 +155,23 @@ internal static class SessionProcess
     public static int LaunchInUserSession(string commandLine, ILogger logger)
     {
         var (sessionId, userToken) = GetUserSessionToken(logger);
+        return LaunchWithToken(userToken, sessionId, commandLine, logger);
+    }
 
+    /// <summary>
+    /// Launches a process in a specific session by ID.
+    /// </summary>
+    public static int LaunchInSession(uint targetSessionId, string commandLine, ILogger logger)
+    {
+        if (!WTSQueryUserToken(targetSessionId, out IntPtr userToken))
+            throw new InvalidOperationException(
+                $"WTSQueryUserToken failed for session {targetSessionId} (Win32 error {Marshal.GetLastWin32Error()}).");
+
+        return LaunchWithToken(userToken, targetSessionId, commandLine, logger);
+    }
+
+    private static int LaunchWithToken(IntPtr userToken, uint sessionId, string commandLine, ILogger logger)
+    {
         try
         {
             if (!DuplicateTokenEx(userToken, MAXIMUM_ALLOWED, IntPtr.Zero,
@@ -189,7 +205,7 @@ internal static class SessionProcess
                 CloseHandle(pi.hThread);
                 CloseHandle(pi.hProcess);
 
-                logger.LogInformation("Capture helper started (PID {Pid}) in session {Session}.",
+                logger.LogInformation("Helper started (PID {Pid}) in session {Session}.",
                     pi.dwProcessId, sessionId);
                 return pi.dwProcessId;
             }

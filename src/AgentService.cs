@@ -4,6 +4,7 @@ using GruppenRemoteAgent.Diagnostics;
 using GruppenRemoteAgent.Input;
 using GruppenRemoteAgent.Network;
 using GruppenRemoteAgent.Protocol;
+using GruppenRemoteAgent.Session;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -221,6 +222,18 @@ public class AgentService : BackgroundService
                         _keyboard.Simulate(keyEvt);
                     break;
 
+                case MessageTypes.LIST_SESSIONS:
+                    await HandleListSessionsAsync(ct);
+                    break;
+
+                case MessageTypes.SELECT_SESSION:
+                    HandleSelectSession(payload);
+                    break;
+
+                case MessageTypes.NOTIFY_REMOTE:
+                    HandleNotifyRemote(payload);
+                    break;
+
                 case MessageTypes.HEARTBEAT_ACK:
                     _logger.LogDebug("HEARTBEAT_ACK received.");
                     break;
@@ -234,6 +247,77 @@ public class AgentService : BackgroundService
                     _logger.LogWarning("Unknown message type: 0x{Type:X2}", type);
                     break;
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // LIST_SESSIONS handler
+    // -----------------------------------------------------------------------
+    private async Task HandleListSessionsAsync(CancellationToken ct)
+    {
+        _logger.LogInformation("LIST_SESSIONS received, enumerating sessions...");
+        try
+        {
+            var sessions = WtsSessionManager.GetSessions();
+            var response = new SessionListPayload { Sessions = sessions };
+            var msg = BinaryProtocol.EncodeJson(MessageTypes.SESSION_LIST, response);
+            await _wsClient.SendAsync(msg, ct);
+            _logger.LogInformation("SESSION_LIST sent with {Count} session(s).", sessions.Length);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error enumerating sessions.");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SELECT_SESSION handler
+    // -----------------------------------------------------------------------
+    private void HandleSelectSession(ReadOnlyMemory<byte> payload)
+    {
+        var req = BinaryProtocol.DeserializePayload<SelectSessionPayload>(payload);
+
+        if (req.SessionId.HasValue)
+        {
+            _logger.LogInformation("SELECT_SESSION: switching to session {SessionId}.", req.SessionId.Value);
+            if (_screenCapture is SessionCapture session)
+            {
+                session.SwitchToSession(req.SessionId.Value);
+            }
+            else
+            {
+                _logger.LogWarning("SELECT_SESSION ignored: not running in Session 0 mode.");
+            }
+        }
+        else if (req.Credentials is not null)
+        {
+            _logger.LogInformation("SELECT_SESSION: credentials received for {Domain}\\{User}. " +
+                "Programmatic session creation is not yet supported — " +
+                "the user must log in via RDP or console.",
+                req.Credentials.Domain, req.Credentials.User);
+        }
+        else
+        {
+            _logger.LogWarning("SELECT_SESSION: no session_id or credentials provided.");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // NOTIFY_REMOTE handler
+    // -----------------------------------------------------------------------
+    private void HandleNotifyRemote(ReadOnlyMemory<byte> payload)
+    {
+        var notify = BinaryProtocol.DeserializePayload<NotifyRemotePayload>(payload);
+        _logger.LogInformation("NOTIFY_REMOTE: technician={Name}, connected={Connected}",
+            notify.TechnicianName, notify.Connected);
+
+        if (_screenCapture is SessionCapture session)
+        {
+            session.SendNotification(notify);
+        }
+        else
+        {
+            _logger.LogWarning("NOTIFY_REMOTE ignored: not running in Session 0 mode.");
         }
     }
 
@@ -287,6 +371,16 @@ public class AgentService : BackgroundService
                 if (_screenCapture is null) break;
 
                 byte[] jpeg = _screenCapture.CaptureScreen(_streamQuality);
+
+                // Frame skipping: empty array means screen unchanged
+                if (jpeg.Length == 0)
+                {
+                    sw.Stop();
+                    int skipDelay = frameIntervalMs - (int)sw.ElapsedMilliseconds;
+                    if (skipDelay > 0) await Task.Delay(skipDelay, ct);
+                    continue;
+                }
+
                 _frameSeq++;
                 uint tsMs = (uint)(DateTimeOffset.UtcNow - _captureStart).TotalMilliseconds;
 

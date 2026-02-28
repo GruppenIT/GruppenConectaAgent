@@ -2,21 +2,25 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Windows.Forms;
 
 namespace GruppenRemoteAgent.Capture;
 
 /// <summary>
 /// Lightweight helper process that runs in the interactive user session.
-/// Handles screen capture (via capture pipe) and input simulation (via input pipe).
+/// Handles screen capture (via capture pipe), input simulation and
+/// notification overlay (via input pipe).
 ///
 /// Capture pipe (bidirectional):
 ///   Service  → Helper : [1 byte quality (1-100)]
-///   Helper   → Service: [4 bytes BE length][N bytes JPEG data]
+///   Helper   → Service: [4 bytes BE length][N bytes JPEG data]  (length 0 = no change)
 ///
 /// Input pipe (one-way, service → helper):
-///   [1 byte type (1=mouse, 2=key)][4 bytes BE length][N bytes JSON]
+///   [1 byte type][4 bytes BE length][N bytes JSON]
+///   type 1 = mouse, type 2 = key, type 3 = notify
 /// </summary>
 internal static class CaptureHelper
 {
@@ -93,6 +97,7 @@ internal static class CaptureHelper
     // Input pipe message types
     private const byte INPUT_TYPE_MOUSE = 1;
     private const byte INPUT_TYPE_KEY = 2;
+    private const byte INPUT_TYPE_NOTIFY = 3;
 
     // -----------------------------------------------------------------------
     // JSON models (local copies to avoid depending on Protocol namespace)
@@ -112,6 +117,40 @@ internal static class CaptureHelper
         [JsonPropertyName("modifiers")] public string[] Modifiers { get; set; } = Array.Empty<string>();
     }
 
+    private class NotifyEvent
+    {
+        [JsonPropertyName("technician_name")] public string TechnicianName { get; set; } = string.Empty;
+        [JsonPropertyName("connected")] public bool Connected { get; set; }
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification overlay
+    // -----------------------------------------------------------------------
+    private static RemoteNotifyOverlay? _overlay;
+    private static Thread? _overlayThread;
+
+    private static void EnsureOverlayThread()
+    {
+        if (_overlayThread is not null && _overlayThread.IsAlive)
+            return;
+
+        _overlayThread = new Thread(() =>
+        {
+            _overlay = new RemoteNotifyOverlay();
+            Application.Run(_overlay);
+        })
+        {
+            IsBackground = true,
+            Name = "NotifyOverlay"
+        };
+        _overlayThread.SetApartmentState(ApartmentState.STA);
+        _overlayThread.Start();
+
+        // Wait for overlay to be created
+        for (int i = 0; i < 50 && _overlay is null; i++)
+            Thread.Sleep(50);
+    }
+
     // -----------------------------------------------------------------------
     // Entry point
     // -----------------------------------------------------------------------
@@ -126,7 +165,6 @@ internal static class CaptureHelper
             capturePipe.Connect(10_000);
 
             NamedPipeClientStream? inputPipe = null;
-            Thread? inputThread = null;
 
             if (inputPipeName is not null)
             {
@@ -135,8 +173,7 @@ internal static class CaptureHelper
                 inputPipe.Connect(10_000);
                 Log("Connected to both pipes.");
 
-                // Start background thread for input events
-                inputThread = new Thread(() => InputLoop(inputPipe))
+                var inputThread = new Thread(() => InputLoop(inputPipe))
                 {
                     IsBackground = true,
                     Name = "InputPipeReader"
@@ -150,6 +187,9 @@ internal static class CaptureHelper
 
             var jpegEncoder = ImageCodecInfo.GetImageEncoders()
                 .First(e => e.FormatID == ImageFormat.Jpeg.Guid);
+
+            // Frame skipping: keep hash of last frame's raw pixels
+            byte[]? lastFrameHash = null;
 
             while (capturePipe.IsConnected)
             {
@@ -165,6 +205,20 @@ internal static class CaptureHelper
                 {
                     g.CopyFromScreen(0, 0, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
                 }
+
+                // Compute hash of raw bitmap data for change detection
+                byte[] currentHash = ComputeBitmapHash(bmp);
+
+                if (lastFrameHash is not null && currentHash.AsSpan().SequenceEqual(lastFrameHash))
+                {
+                    // Screen unchanged — send zero-length response
+                    byte[] zeroLen = { 0, 0, 0, 0 };
+                    capturePipe.Write(zeroLen, 0, 4);
+                    capturePipe.Flush();
+                    continue;
+                }
+
+                lastFrameHash = currentHash;
 
                 byte[] jpeg;
                 using (var ms = new MemoryStream())
@@ -196,6 +250,28 @@ internal static class CaptureHelper
         catch (Exception ex)
         {
             Log($"FATAL: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Computes a fast MD5 hash of the raw bitmap pixel data for change detection.
+    /// </summary>
+    private static byte[] ComputeBitmapHash(Bitmap bmp)
+    {
+        var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+        var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, bmp.PixelFormat);
+        try
+        {
+            int byteCount = Math.Abs(data.Stride) * data.Height;
+            unsafe
+            {
+                var span = new ReadOnlySpan<byte>((void*)data.Scan0, byteCount);
+                return MD5.HashData(span);
+            }
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
         }
     }
 
@@ -239,6 +315,11 @@ internal static class CaptureHelper
                         if (key is not null) HandleKey(key);
                         break;
 
+                    case INPUT_TYPE_NOTIFY:
+                        var notify = JsonSerializer.Deserialize<NotifyEvent>(json);
+                        if (notify is not null) HandleNotify(notify);
+                        break;
+
                     default:
                         Log($"Unknown input type: {type}");
                         break;
@@ -259,6 +340,31 @@ internal static class CaptureHelper
             int read = stream.Read(buffer, offset + totalRead, count - totalRead);
             if (read == 0) throw new EndOfStreamException("Pipe closed while reading.");
             totalRead += read;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification handling
+    // -----------------------------------------------------------------------
+    private static void HandleNotify(NotifyEvent evt)
+    {
+        try
+        {
+            if (evt.Connected)
+            {
+                Log($"Showing notification overlay for {evt.TechnicianName}.");
+                EnsureOverlayThread();
+                _overlay?.ShowNotification(evt.TechnicianName);
+            }
+            else
+            {
+                Log("Hiding notification overlay.");
+                _overlay?.HideNotification();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Error handling notify: {ex.Message}");
         }
     }
 
@@ -452,5 +558,77 @@ internal static class CaptureHelper
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [CaptureHelper] {message}{Environment.NewLine}");
         }
         catch { /* best effort */ }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Notification overlay form (WinForms, topmost, borderless)
+// -----------------------------------------------------------------------
+internal class RemoteNotifyOverlay : Form
+{
+    private readonly Label _label;
+
+    public RemoteNotifyOverlay()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        ShowInTaskbar = false;
+        BackColor = Color.FromArgb(30, 30, 30);
+        Opacity = 0.85;
+        Size = new Size(350, 40);
+
+        var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+        Location = new Point(screen.Right - Width - 10, screen.Bottom - Height - 10);
+
+        _label = new Label
+        {
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter,
+        };
+        Controls.Add(_label);
+    }
+
+    public void ShowNotification(string technicianName)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => ShowNotification(technicianName));
+            return;
+        }
+
+        _label.Text = $"Sessão controlada por: {technicianName} (Gruppen)";
+
+        // Re-position in case screen resolution changed
+        var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+        Location = new Point(screen.Right - Width - 10, screen.Bottom - Height - 10);
+
+        Show();
+    }
+
+    public void HideNotification()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(HideNotification);
+            return;
+        }
+
+        Hide();
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            // WS_EX_TOOLWINDOW: hide from Alt+Tab
+            // WS_EX_TRANSPARENT: click-through
+            cp.ExStyle |= 0x00000080 | 0x00000020;
+            return cp;
+        }
     }
 }

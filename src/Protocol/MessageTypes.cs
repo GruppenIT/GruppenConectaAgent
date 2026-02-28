@@ -11,5 +11,9 @@ public static class MessageTypes
     public const byte STOP_STREAM = 0x07;
     public const byte HEARTBEAT = 0x08;
     public const byte HEARTBEAT_ACK = 0x09;
+    public const byte LIST_SESSIONS = 0x0A;
+    public const byte SESSION_LIST = 0x0B;
+    public const byte SELECT_SESSION = 0x0C;
+    public const byte NOTIFY_REMOTE = 0x0D;
     public const byte ERROR = 0xFF;
 }

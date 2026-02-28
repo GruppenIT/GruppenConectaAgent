@@ -79,3 +79,54 @@ public class ErrorResponse
     [JsonPropertyName("message")]
     public string Message { get; set; } = string.Empty;
 }
+
+public class SessionInfoDto
+{
+    [JsonPropertyName("id")]
+    public int Id { get; set; }
+
+    [JsonPropertyName("username")]
+    public string Username { get; set; } = string.Empty;
+
+    [JsonPropertyName("state")]
+    public string State { get; set; } = string.Empty;
+
+    [JsonPropertyName("is_console")]
+    public bool IsConsole { get; set; }
+}
+
+public class SessionListPayload
+{
+    [JsonPropertyName("sessions")]
+    public SessionInfoDto[] Sessions { get; set; } = Array.Empty<SessionInfoDto>();
+}
+
+public class SelectSessionPayload
+{
+    [JsonPropertyName("session_id")]
+    public int? SessionId { get; set; }
+
+    [JsonPropertyName("credentials")]
+    public SessionCredentials? Credentials { get; set; }
+}
+
+public class SessionCredentials
+{
+    [JsonPropertyName("domain")]
+    public string Domain { get; set; } = string.Empty;
+
+    [JsonPropertyName("user")]
+    public string User { get; set; } = string.Empty;
+
+    [JsonPropertyName("pass")]
+    public string Pass { get; set; } = string.Empty;
+}
+
+public class NotifyRemotePayload
+{
+    [JsonPropertyName("technician_name")]
+    public string TechnicianName { get; set; } = string.Empty;
+
+    [JsonPropertyName("connected")]
+    public bool Connected { get; set; }
+}
