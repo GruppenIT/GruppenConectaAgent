@@ -53,7 +53,8 @@ public class AgentService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Gruppen Remote Agent starting. AgentId={AgentId}", _config.AgentId);
+        _logger.LogInformation("Gruppen Remote Agent starting. AgentId={AgentId}, ConsoleUrl={Url}",
+            _config.AgentId, _config.ConsoleUrl);
 
         InitializeScreenCapture();
 
