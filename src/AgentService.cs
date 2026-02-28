@@ -20,6 +20,7 @@ public class AgentService : BackgroundService
     private readonly SystemInfo _systemInfo;
     private readonly ILogger<DxgiCapture> _dxgiLogger;
     private readonly ILogger<GdiCapture> _gdiLogger;
+    private readonly ILogger<SessionCapture> _sessionLogger;
 
     private IScreenCapture? _screenCapture;
     private bool _isStreaming;
@@ -39,7 +40,8 @@ public class AgentService : BackgroundService
         KeyboardSimulator keyboard,
         SystemInfo systemInfo,
         ILogger<DxgiCapture> dxgiLogger,
-        ILogger<GdiCapture> gdiLogger)
+        ILogger<GdiCapture> gdiLogger,
+        ILogger<SessionCapture> sessionLogger)
     {
         _logger = logger;
         _config = config.Value;
@@ -49,6 +51,7 @@ public class AgentService : BackgroundService
         _systemInfo = systemInfo;
         _dxgiLogger = dxgiLogger;
         _gdiLogger = gdiLogger;
+        _sessionLogger = sessionLogger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -103,6 +106,17 @@ public class AgentService : BackgroundService
 
     private void InitializeScreenCapture()
     {
+        // Session 0 (service session) has no interactive desktop — CopyFromScreen
+        // will fail with "The handle is invalid". Use a helper process in the user
+        // session to do the actual capture and relay frames via named pipe.
+        if (SessionProcess.IsSession0())
+        {
+            _screenCapture = new SessionCapture(_sessionLogger);
+            _logger.LogInformation("Running in Session 0. Screen capture will use a helper in the user session.");
+            return;
+        }
+
+        // Direct capture (running in a user session — e.g. during development)
         try
         {
             var dxgi = new DxgiCapture(_dxgiLogger);
